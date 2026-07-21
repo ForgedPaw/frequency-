@@ -211,8 +211,21 @@ svg.tuner{width:100%; height:auto; display:block;}
 ::-webkit-scrollbar{width:6px;} ::-webkit-scrollbar-thumb{background:var(--hairline); border-radius:3px;}
 
 @media (max-width:480px){
-  .unit{padding:16px 16px 20px; max-height:calc(100vh - 16px);}
-  .start-overlay{padding:20px 16px;}
+  /* Full-bleed app shell instead of a small card floating in a sea of dead
+     space — on a tall phone the fixed 520px card left huge empty gaps
+     above/below. dvh (not vh) accounts for the mobile browser chrome
+     showing/hiding so the shell doesn't get clipped behind the URL bar. */
+  body{padding:0; align-items:stretch;}
+  #app{max-width:100%;}
+  .unit{
+    padding:16px 16px 20px;
+    border-radius:0;
+    min-height:100vh; min-height:100dvh;
+    max-height:100vh; max-height:100dvh;
+    display:flex;
+    flex-direction:column;
+  }
+  .start-overlay{padding:20px 16px; border-radius:0;}
   .landing-gear-row{top:10px; right:10px;}
   .start-overlay h2{font-size:16px;}
   .start-overlay p{font-size:12.5px; margin-bottom:16px;}
@@ -221,5 +234,9 @@ svg.tuner{width:100%; height:auto; display:block;}
   .landing-hint{margin-top:14px;}
   .categories{grid-template-columns:1fr 1fr; gap:6px;}
   .cat-btn{font-size:11.5px; padding:9px 6px;}
-  .log{max-height:110px;}
+  /* Grows to absorb whatever space the full-bleed shell freed up instead of
+     staying capped at a small fixed height. min-height:0 overrides flexbox's
+     default min-height:auto, which would otherwise stop it from shrinking
+     below its content size and break the "fill remaining space" behavior. */
+  .log{flex:1 1 auto; min-height:0; max-height:none;}
 }
