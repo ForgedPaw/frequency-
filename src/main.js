@@ -2,7 +2,7 @@ import './style.css';
 import { createDial } from './ui/dial.js';
 import { createSettings } from './ui/settings.js';
 import { createBattleSetup } from './ui/battleSetup.js';
-import { createGame, MY_LIBRARY_KEY } from './state/gameMachine.js';
+import { MY_LIBRARY_KEY } from './state/constants.js';
 import { createBattle } from './state/battleMachine.js';
 import { createNameThatTune } from './state/nameThatTuneMachine.js';
 import { setupSpeech, speak, onSpeak } from './voice/speak.js';
@@ -170,9 +170,8 @@ function renderLandingPage() {
     </div>
     <h2>Frequency</h2>
     <p>How do you want to play?</p>
-    <button class="start-btn stacked-btn" id="standardModeBtn">Standard mode</button>
-    <button class="start-btn spotify stacked-btn" id="battleModeBtn">Battle mode (2-3 players)</button>
     <button class="start-btn stacked-btn" id="nameThatTuneModeBtn">Name That Tune</button>
+    <button class="start-btn spotify stacked-btn" id="battleModeBtn">Battle mode (2-3 players)</button>
 
     <p class="setup-step-label">Difficulty</p>
     <div class="setup-row" id="landingDifficultyRow">
@@ -193,10 +192,6 @@ function renderLandingPage() {
 
   wireLandingSettings();
 
-  document.getElementById('standardModeBtn').addEventListener('click', () => {
-    if (!spotifyAuth.isAuthenticated()) { openLandingSettings(); return; }
-    boot(selectedDifficulty);
-  });
   document.getElementById('battleModeBtn').addEventListener('click', () => {
     if (!spotifyAuth.isAuthenticated()) { openLandingSettings(); return; }
     startBattleSetupFlow(selectedDifficulty);
@@ -246,10 +241,10 @@ function escapeHtml(s) {
 
 let booted = false;
 
-// Shared by both standard and battle mode: mic button, listening indicator,
-// live interim transcript, skip button, and track-end wiring. Both game
-// objects expose the same { handleUtterance, isBusy, defaultHint, skipSong }
-// shape, so this works identically regardless of mode.
+// Shared by both Name That Tune and Battle mode: mic button, listening
+// indicator, live interim transcript, skip button, and track-end wiring.
+// Both game objects expose the same { handleUtterance, isBusy, defaultHint,
+// skipSong } shape, so this works identically regardless of mode.
 function wireGameControls(controller) {
   const micBtn = document.getElementById('micBtn');
   const hintRow = document.getElementById('hintRow');
@@ -279,90 +274,6 @@ function wireGameControls(controller) {
 
   skipBtn.addEventListener('click', () => controller.skipSong());
   spotifyPlayer.onTrackEnd(() => controller.songEnded());
-}
-
-async function boot(difficulty) {
-  if (booted) return;
-  booted = true;
-
-  // Rebuild the shell fresh (same as bootBattle()) rather than reusing the
-  // landing page's elements — otherwise the landing page's settings-close
-  // handler stays bound to the shared backdrop and fires during gameplay,
-  // trying to re-render the landing page over an active game.
-  renderShell();
-  document.getElementById('startOverlay').remove();
-
-  const dial = createDial(document.getElementById('dialMount'));
-  const logEl = document.getElementById('log');
-  const scoreNumEl = document.getElementById('scoreNum');
-  const categoriesEl = document.getElementById('categories');
-
-  function addLog(who, text, dim) {
-    const row = document.createElement('div');
-    row.className = 'row';
-    row.innerHTML = `<span class="who ${who === 'DJ' ? 'dj' : 'you'}">${who}</span><span class="txt${dim ? ' dim' : ''}">${escapeHtml(text)}</span>`;
-    logEl.appendChild(row);
-    logEl.scrollTop = logEl.scrollHeight;
-  }
-
-  if (voiceSetup.notice) addLog('DJ', voiceSetup.notice, true);
-  onSpeak((text) => addLog('DJ', text));
-  onTranscriptLogged((text) => addLog('You', text));
-
-  try {
-    await spotifyPlayer.initPlayer();
-  } catch (e) {
-    addLog('DJ', `Spotify playback couldn't start: ${e.message}`, true);
-  }
-
-  const game = createGame({
-    speak,
-    listen: (onResult) => listenOnce(onResult),
-    triviaClient,
-    initialDifficulty: difficulty,
-    player: {
-      play: (track) => playWithRetry(() => spotifyPlayer.play(track), addLog),
-      pause: () => spotifyPlayer.pause(),
-    },
-    ui: {
-      setState: (stateKey, name, sub) => {
-        dial.setNeedle(stateKey);
-        dial.setReadout(name, sub);
-        document.getElementById('skipBtn').style.display = stateKey === 'PLAYBACK' ? 'block' : 'none';
-      },
-      setScore: ({ correct, total }) => { scoreNumEl.textContent = `${correct}/${total}`; },
-      log: addLog,
-      waveMode: (mode) => dial.waveMode(mode),
-      setAlbumArt: (url) => dial.setAlbumArt(url),
-      showCategories: (show) => { categoriesEl.style.display = show ? 'grid' : 'none'; },
-      setBusy: (isBusy) => {
-        document.getElementById('micBtn').disabled = isBusy;
-        document.getElementById('micBtn').classList.toggle('busy', isBusy);
-        if (isBusy) {
-          document.getElementById('hintRow').textContent = 'Thinking…';
-          dial.waveMode('thinking');
-        } else {
-          dial.waveMode('idle');
-        }
-      },
-    },
-  });
-
-  wireGameControls(game);
-
-  categoriesEl.addEventListener('click', (e) => {
-    const btn = e.target.closest('.cat-btn');
-    if (!btn) return;
-    if (btn.dataset.cat === 'custom') {
-      game.customCategoryPrompt();
-    } else {
-      game.startCategory(btn.dataset.cat);
-    }
-  });
-
-  wireSettings();
-
-  game.boot();
 }
 
 async function bootNameThatTune(difficulty) {
@@ -506,6 +417,7 @@ async function bootBattle({ playerNames, targetScore, difficulty, category, isMy
     player: {
       play: (track) => playWithRetry(() => spotifyPlayer.play(track), addLog),
       pause: () => spotifyPlayer.pause(),
+      playClip: (track, ms, positionMs) => playWithRetry(() => spotifyPlayer.playSample(track, ms, positionMs), addLog),
     },
     ui: {
       setState: (stateKey, name, sub) => {

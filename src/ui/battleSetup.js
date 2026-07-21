@@ -2,7 +2,7 @@
 // category. Difficulty is chosen on the landing page and passed in via
 // deps.difficulty. Calls onComplete once all choices are made.
 
-import { MY_LIBRARY_KEY } from '../state/gameMachine.js';
+import { MY_LIBRARY_KEY } from '../state/constants.js';
 
 const CATEGORIES = [
   { label: 'Genre: Classic Rock', value: 'classic rock genre' },

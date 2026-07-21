@@ -1,45 +1,22 @@
-// Battle mode: turn-based head-to-head trivia for 2-3 players.
+// Battle mode: turn-based head-to-head Name That Tune for 2-3 players.
 // Category and difficulty are fixed for the whole battle (no adaptive
-// difficulty — keeps every player facing genuinely equal questions).
-// First player to reach targetScore wins. Each question allows exactly one
-// hint. Mirrors gameMachine.js's QUESTION/REVEAL/PLAYBACK flow but turn-based.
+// difficulty — keeps every player facing genuinely equal songs). Each
+// player's turn is a clue + 8-second clip + guess-the-title round, the same
+// mechanic as single-player Name That Tune (see nameThatTuneMachine.js),
+// scored across a shared queue with turns cycling between players and a
+// target-score win condition instead of a personal running total.
 
-// Context scaffolding — see the matching comment in gameMachine.js. Title
-// always stays hidden; artist/album/year (from Spotify's own metadata) are
-// safe to reveal except whichever is literally the current answer, and how
-// much of that gets said upfront vs. saved for the one hint scales with
-// the battle's fixed difficulty.
-const CONTEXT_FIELDS = ['artist', 'album', 'year'];
-
-function safeContextFields(track, category) {
-  return CONTEXT_FIELDS.filter((field) => {
-    if (field === 'album' && category === 'Album') return false;
-    if (field === 'year' && category === 'Year') return false;
-    return !!track[field];
-  });
-}
-
-function upfrontContextFields(track, category, difficulty) {
-  const safe = safeContextFields(track, category);
-  if (difficulty === 'Easy') return safe;
-  if (difficulty === 'Medium') return safe.filter((f) => f === 'artist');
-  return [];
-}
-
-function contextSentence(fields, track) {
-  if (!fields.length) return '';
-  const parts = [];
-  if (fields.includes('artist')) parts.push(`by ${track.artist}`);
-  if (fields.includes('album')) parts.push(`from the album ${track.album}`);
-  if (fields.includes('year')) parts.push(`released in ${track.year}`);
-  return ` This track is ${parts.join(', ')}.`;
-}
+const CLIP_MS = 8000;
+const HINT_MS = 5000;
+// Small buffer past the clip's exact requested duration before we start
+// listening — mirrors player.js's own end-of-track buffer for full playback.
+const CLIP_BUFFER_MS = 400;
 
 export function createBattle(deps) {
   const {
     speak, listen, triviaClient, player, ui,
     playerNames,   // string[], 2 or 3 entries, in turn order
-    targetScore,   // number — first to reach this many correct answers wins
+    targetScore,   // number — first to reach this many correct guesses wins
     difficulty,    // 'Easy' | 'Medium' | 'Hard' — fixed for the whole battle
     category,      // category text, or MY_LIBRARY_KEY
     isMyLibrary,
@@ -50,7 +27,7 @@ export function createBattle(deps) {
   let state = 'QUESTION';
   let supplier = null;    // paginated track supplier — see spotify/search.js — no fixed queue size
   let roundsAsked = 0;
-  let currentQ = null;
+  let currentQ = null;    // { clue, funfact, category, track, clipMs }
   let activeIndex = 0;
   let busy = false;
 
@@ -78,7 +55,7 @@ export function createBattle(deps) {
 
   function defaultHint() {
     switch (state) {
-      case 'QUESTION': return 'Answer, or say "hint", "repeat", or "skip".';
+      case 'QUESTION': return 'Guess the song title, or say "hint" for more of the clip.';
       case 'REVEAL': return 'Say "play song" or "next question".';
       case 'PLAYBACK': return 'Say "skip song" to jump ahead.';
       default: return 'Say "help" any time.';
@@ -87,7 +64,7 @@ export function createBattle(deps) {
 
   function helpText() {
     switch (state) {
-      case 'QUESTION': return 'You can say repeat the question, give me a hint, tell me the answer, or skip question.';
+      case 'QUESTION': return 'Try to name the song from the clue and the clip. Say hint for five more seconds of audio, play it again to replay the clip, or skip question.';
       case 'REVEAL': return 'You can say play song, or next question.';
       case 'PLAYBACK': return 'You can say skip song to jump ahead.';
       default: return 'Say "help" any time.';
@@ -141,7 +118,7 @@ export function createBattle(deps) {
     const intro = players.length === 2
       ? `${players[0].name} versus ${players[1].name}`
       : players.map((p) => p.name).join(', ');
-    speak(`Let's battle! ${intro}. First to ${targetScore} wins. ${activePlayer().name}, you're up first.`, () => askCurrentPlayer());
+    speak(`Let's battle! ${intro}. First to ${targetScore} wins — name that tune. ${activePlayer().name}, you're up first.`, () => askCurrentPlayer());
   }
 
   async function askCurrentPlayer() {
@@ -172,26 +149,42 @@ export function createBattle(deps) {
     }
     const track = tracks[0];
     roundsAsked++;
-    if (ui.setAlbumArt) ui.setAlbumArt(null); // clear any art shown during the previous track's playback
+    if (ui.setAlbumArt) ui.setAlbumArt(null); // stay spoiler-safe until the reveal
     setPhase('QUESTION', 'Battle', `${activePlayer().name}'s turn`);
     let q;
     for (let attempt = 0; attempt < 2 && !q; attempt++) {
       try {
-        q = await triviaClient.generateQuestion(track, difficulty);
+        q = await triviaClient.generateClue(track, difficulty);
       } catch (e) {
-        ui.log('DJ', `Question generation failed${attempt === 0 ? ' — retrying…' : ''}: ${e.message}`, true);
+        ui.log('DJ', `Clue generation failed${attempt === 0 ? ' — retrying…' : ''}: ${e.message}`, true);
       }
     }
     setBusy(false);
     if (!q) { askCurrentPlayer(); return; }
-    currentQ = { ...q, track, hintUsed: false };
+    currentQ = { ...q, track, clipMs: CLIP_MS };
     setPhase('QUESTION', 'Battle', `${activePlayer().name} — ${q.category}`);
-    speak(questionLine(q), () => listen(handleUtterance));
+    speak(clueLine(q), () => playClipThenListen(CLIP_MS, 0));
   }
 
-  function questionLine(q) {
-    const shown = upfrontContextFields(q.track, q.category, difficulty);
-    return `${activePlayer().name}'s turn. ${q.category} trivia.${contextSentence(shown, q.track)} ${q.question}`;
+  function clueLine(q) {
+    return `${activePlayer().name}'s turn. ${q.category} clue. ${q.clue}`;
+  }
+
+  // Plays `ms` of audio starting at `positionMs`, then waits out that same
+  // duration locally before listening for the guess. Deliberately not tied
+  // to player.js's global onTrackEnd callback — that's reserved for the
+  // optional full-song reveal playback below (state 'PLAYBACK'), and reusing
+  // it here would fire songEnded() at the wrong time since this happens
+  // while still in 'QUESTION'.
+  function playClipThenListen(ms, positionMs) {
+    ui.waveMode('playing');
+    player.playClip(currentQ.track, ms, positionMs).catch((e) => {
+      ui.log('DJ', `Playback error: ${e.message}`, true);
+    });
+    setTimeout(() => {
+      ui.waveMode('idle');
+      listen(handleUtterance);
+    }, ms + CLIP_BUFFER_MS);
   }
 
   function advanceTurn() {
@@ -202,23 +195,19 @@ export function createBattle(deps) {
   function onQuestionUtterance(text) {
     const q = currentQ;
     if (!q) return;
-    if (matchesAny(text, ['repeat the question', 'say that again', 'repeat that', 'repeat'])) {
-      speak(questionLine(q), () => listen(handleUtterance));
+    if (matchesAny(text, ['repeat the clue', 'repeat the question', 'say that again', 'repeat that', 'repeat'])) {
+      speak(clueLine(q), () => listen(handleUtterance));
+      return;
+    }
+    if (matchesAny(text, ['play it again', 'play that again', 'replay the clip', 'replay'])) {
+      playClipThenListen(q.clipMs, 0);
       return;
     }
     if (matchesAny(text, ['give me a hint', 'hint'])) {
-      if (q.hintUsed) {
-        speak("You've already used your hint for this one — take your best guess!", () => listen(handleUtterance));
-      } else {
-        q.hintUsed = true;
-        const shown = upfrontContextFields(q.track, q.category, difficulty);
-        const safe = safeContextFields(q.track, q.category);
-        const extra = safe.filter((f) => !shown.includes(f));
-        speak(`${q.hint}${contextSentence(extra, q.track)}`, () => listen(handleUtterance));
-      }
+      giveHint();
       return;
     }
-    if (matchesAny(text, ['tell me the answer', 'what is the answer', 'i give up'])) {
+    if (matchesAny(text, ['tell me the answer', 'what is the answer', 'what is the song', 'i give up'])) {
       revealAnswer(null);
       return;
     }
@@ -226,28 +215,41 @@ export function createBattle(deps) {
       speak('Skipping.', () => advanceTurn());
       return;
     }
-    checkAnswer(text);
+    checkGuess(text);
   }
 
-  async function checkAnswer(text) {
+  function giveHint() {
+    const q = currentQ;
+    const duration = q.track.durationMs || Infinity;
+    if (q.clipMs >= duration) {
+      speak("That's already the whole song — take your best guess!", () => listen(handleUtterance));
+      return;
+    }
+    const startMs = q.clipMs;
+    const addMs = Math.min(HINT_MS, duration - startMs);
+    q.clipMs = startMs + addMs;
+    speak("Here's a little more.", () => playClipThenListen(addMs, startMs));
+  }
+
+  async function checkGuess(text) {
     if (busy) return;
     setBusy(true);
-    setPhase('QUESTION', 'Battle', 'Checking the answer…');
+    setPhase('QUESTION', 'Battle', 'Checking the guess…');
     const q = currentQ;
     // null = the check never actually completed — must not be conflated
-    // with "wrong", which would silently penalize a correct answer whenever
+    // with "wrong", which would silently penalize a correct guess whenever
     // the judge call fails (network blip, model overload, etc).
     let correct = null;
     for (let attempt = 0; attempt < 2 && correct === null; attempt++) {
       try {
-        correct = await triviaClient.judgeAnswer(text, q.answer);
+        correct = await triviaClient.judgeAnswer(text, q.track.name);
       } catch (e) {
         ui.log('DJ', `Answer check failed${attempt === 0 ? ' — retrying…' : ''}: ${e.message}`, true);
       }
     }
     setBusy(false);
     if (correct === null) {
-      speak("Sorry, I couldn't check that — say your answer again?", () => listen(handleUtterance));
+      speak("Sorry, I couldn't check that — say your guess again?", () => listen(handleUtterance));
       return;
     }
     if (correct) activePlayer().score++;
@@ -259,24 +261,23 @@ export function createBattle(deps) {
     const q = currentQ;
     const name = activePlayer().name;
     setPhase('REVEAL', 'Reveal', `${q.track.name} — ${q.track.artist}`);
-    const categoryLower = q.category.toLowerCase();
 
     if (wasCorrect === true && activePlayer().score >= targetScore) {
-      const opener = `Correct! The ${categoryLower} answer was ${q.answer}. ${q.funfact} That was "${q.track.name}" by ${q.track.artist}.`;
+      const opener = `Correct! That was "${q.track.name}" by ${q.track.artist}. ${q.funfact}`;
       speak(`${opener} And that's the game — ${name} wins with ${activePlayer().score}!`, finishBattle);
       return;
     }
 
-    const opener = wasCorrect === true ? `Correct, ${name}! The ${categoryLower} answer was ${q.answer}.`
-      : wasCorrect === false ? `Not quite, ${name} — the ${categoryLower} answer was ${q.answer}.`
-      : `Here's the ${categoryLower} answer, ${name}: ${q.answer}.`;
+    const opener = wasCorrect === true ? `Correct, ${name}! That was "${q.track.name}" by ${q.track.artist}.`
+      : wasCorrect === false ? `Not quite, ${name} — that was "${q.track.name}" by ${q.track.artist}.`
+      : `Here it is, ${name}: "${q.track.name}" by ${q.track.artist}.`;
 
-    const text = `${opener} ${q.funfact} That was "${q.track.name}" by ${q.track.artist}. Play the song, or next question?`;
+    const text = `${opener} ${q.funfact} Play the full song, or next question?`;
     speak(text, () => listen(handleUtterance));
   }
 
   function onRevealUtterance(text) {
-    if (matchesAny(text, ['play song', 'play the song', 'play it'])) {
+    if (matchesAny(text, ['play song', 'play the song', 'play it', 'play full song'])) {
       playCurrentTrack();
       return;
     }
@@ -287,6 +288,7 @@ export function createBattle(deps) {
     playCurrentTrack();
   }
 
+  // ---------- PLAYBACK (optional full song after the reveal) ----------
   function playCurrentTrack() {
     const q = currentQ;
     setPhase('PLAYBACK', 'Playback', `${q.track.name} — ${q.track.artist}`);
@@ -301,13 +303,16 @@ export function createBattle(deps) {
     advanceTurn();
   }
 
-  // Called by main.js when player.js reports natural track end. That
-  // report is a client-side timer based on the track's expected duration,
-  // not a real "Spotify actually stopped" signal — the /play call has
-  // network/buffering start-latency the timer doesn't account for, so the
-  // timer can fire slightly before the track truly finishes. Explicitly
-  // pause here (same as skipSong()) so leftover audio never bleeds into
-  // the next turn instead of just assuming it already stopped.
+  // Called by main.js when player.js reports natural track end. Only
+  // meaningful during the optional full-song reveal playback — the
+  // clip-guessing phase manages its own timing (see playClipThenListen) and
+  // never enters 'PLAYBACK' state, so this is a no-op the rest of the time.
+  // That report is a client-side timer based on the track's expected
+  // duration, not a real "Spotify actually stopped" signal — the /play call
+  // has network/buffering start-latency the timer doesn't account for, so
+  // it can fire slightly before the track truly finishes. Explicitly pause
+  // here (same as skipSong()) so leftover audio never bleeds into the next
+  // turn instead of just assuming it already stopped.
   function songEnded() {
     if (state !== 'PLAYBACK') return;
     player.pause();

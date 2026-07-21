@@ -36,18 +36,10 @@ export function createMyLibrarySupplier() {
   return createLibrarySupplier();
 }
 
-// type: "question" — given track name/artist, returns {question, answer, hint, funfact}
-export async function generateQuestion(track, difficulty) {
-  return callTrivia('question', {
-    trackName: track.name,
-    artist: track.artist,
-    difficulty,
-  });
-}
-
-// type: "clue" — Name That Tune mode. Returns {clue, funfact, category}: a
-// declarative fact about the track (never a question with its own answer —
-// the thing being guessed here is the song title, not a trivia sub-answer).
+// type: "clue" — Name That Tune mode (single-player and battle). Returns
+// {clue, funfact, category}: a declarative fact about the track (never a
+// question with its own answer — the thing being guessed here is the song
+// title, not a trivia sub-answer).
 export async function generateClue(track, difficulty) {
   return callTrivia('clue', {
     trackName: track.name,

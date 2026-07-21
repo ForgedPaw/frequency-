@@ -1,15 +1,15 @@
 // Name That Tune mode: pick a category, hear a spoken clue, hear an 8-second
 // clip of the track, then guess the song title. "Hint" extends the clip by
 // 5 more seconds (resuming from where it left off) instead of speaking more
-// information — the audio itself is the hint.
-//
-// Structurally this mirrors gameMachine.js's MENU/category-picking flow
-// (duplicated here rather than shared, matching how battleMachine.js already
-// duplicates its own pieces of gameMachine.js), but QUESTION/REVEAL/PLAYBACK
-// are a different mechanic: the thing being judged is the track's title, not
-// a generated trivia answer, and hints extend audio rather than reveal text.
+// information — the audio itself is the hint. The single-player mode; battle
+// mode (battleMachine.js) runs the same clue/clip/guess mechanic per player
+// turn, sharing its MENU/category-picking structure with this file (each
+// duplicates its own copy rather than sharing one, since the two flows'
+// surrounding state — a personal running score vs. per-player turns and a
+// target-score win condition — differ enough that sharing would mean
+// threading mode-specific branches through otherwise-simple functions).
 
-import { MY_LIBRARY_KEY } from './gameMachine.js';
+import { MY_LIBRARY_KEY } from './constants.js';
 
 export const ZONES = { MENU: 0, QUESTION: 90, REVEAL: 180, PLAYBACK: 270 };
 export { MY_LIBRARY_KEY };
@@ -24,7 +24,7 @@ export function createNameThatTune(deps) {
   const {
     speak,            // (text, onDone?) => void
     listen,           // (onResult) => void — one-shot recognition
-    triviaClient,     // { createQueueSupplier, createMyLibrarySupplier, generateQuestion, judgeAnswer }
+    triviaClient,     // { createQueueSupplier, createMyLibrarySupplier, generateClue, judgeAnswer }
     player,           // { play(track), pause(), playClip(track, ms, positionMs) }
     ui,               // { setState, setScore, log, waveMode, showCategories, setBusy, setAlbumArt }
     initialDifficulty, // 'Easy' | 'Medium' | 'Hard'
@@ -36,12 +36,12 @@ export function createNameThatTune(deps) {
     difficulty: initialDifficulty || 'Medium',
     supplier: null,
     roundCount: 0,
-    currentQ: null, // { question, funfact, category, track, clipMs }
+    currentQ: null, // { clue, funfact, category, track, clipMs }
     score: { correct: 0, total: 0 },
   };
 
   // Guards network calls (queue build, clue generation, guess judging) from
-  // overlapping voice input — same pattern as gameMachine.js. Deliberately
+  // overlapping voice input — same pattern as battleMachine.js. Deliberately
   // NOT held while a clip plays: the mic isn't listening again until the
   // clip's own timer finishes (see playClipThenListen), so there's no
   // overlapping-input window to guard there.

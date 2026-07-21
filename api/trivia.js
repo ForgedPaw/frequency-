@@ -49,48 +49,6 @@ function queuePrompt(category) {
 
 const KNOWN_CATEGORIES = ['Song', 'Album', 'Year', 'Featured artist', 'Music video', 'Charts & awards', 'Production', 'Fun fact'];
 
-// Picked server-side (not left to the model's judgment) so question variety
-// and per-difficulty accessibility are guaranteed instead of relying on the
-// model's own judgment. Some angles (album name, exact year, chart stats,
-// production credits) are pure-recall facts — you can't infer them just
-// from listening, no matter how gently the question is worded, so they're
-// excluded from Easy entirely rather than just "asked more gently." Player
-// feedback: Easy was still too hard, and there was too much album/year
-// content overall — both are addressed by these tiered, song-weighted pools.
-// Song angles are weighted heaviest — lyrics/theme are text the model has
-// reliably memorized, whereas music video visuals are a common source of
-// confidently-wrong answers (easy to confuse with a different song's video
-// or invent plausible-sounding details for). Keeping Music Video to a
-// single entry limits how often that riskier angle gets picked.
-const EASY_ANGLES = [
-  { label: 'Song', angle: 'the song\'s lyrical theme, meaning, or story it tells — something you\'d pick up on just from listening' },
-  { label: 'Song', angle: 'the song\'s overall vibe, genre, or a phrase repeated in its hook/chorus' },
-  { label: 'Song', angle: 'the general mood or emotion the song conveys, or who/what it seems to be about' },
-  { label: 'Music video', angle: 'a visually obvious, memorable moment or scene from the song\'s official music video' },
-];
-
-const MEDIUM_ANGLES = [
-  { label: 'Song', angle: 'the song\'s lyrical theme, meaning, or story it tells' },
-  { label: 'Music video', angle: 'the song\'s official music video — its concept, setting, or a notable visual' },
-  { label: 'Album', angle: 'the album it appears on' },
-  { label: 'Year', angle: 'the year or era it was released' },
-  { label: 'Featured artist', angle: 'another artist who was featured on, sampled, or covered this track' },
-  { label: 'Fun fact', angle: 'a surprising or little-known fact about the song or artist' },
-];
-
-const HARD_ANGLES = [
-  ...MEDIUM_ANGLES,
-  { label: 'Charts & awards', angle: 'its chart performance, sales figures, certifications, or awards' },
-  { label: 'Production', angle: 'behind-the-scenes writing, production, or recording trivia' },
-];
-
-function anglesForDifficulty(difficulty) {
-  const level = (difficulty || 'Medium').toLowerCase();
-  if (level === 'easy') return EASY_ANGLES;
-  if (level === 'hard') return HARD_ANGLES;
-  return MEDIUM_ANGLES;
-}
-
 // Concrete anchors for what each difficulty actually means — left
 // unspecified, the model's idea of "easy" trivia still skewed hard (exact
 // years, chart positions, deep-cut facts) even for angles that could be
@@ -106,33 +64,11 @@ const DIFFICULTY_GUIDANCE = {
     'The hint should still genuinely help, but can stay narrower/subtler than at easier levels — it\'s meant to reward close followers, not hand the answer over.',
 };
 
-function questionPrompt(trackName, artist, difficulty, angle) {
-  const level = (difficulty || 'Medium').toLowerCase();
-  const guidance = DIFFICULTY_GUIDANCE[level] || DIFFICULTY_GUIDANCE.medium;
-  return `You are a radio trivia game master. The current song is "${trackName}" by ${artist}. ` +
-    `Write one trivia question specifically about: ${angle}. ` +
-    `Only write this if you are genuinely confident the facts are correct FOR THIS EXACT TRACK by THIS EXACT ARTIST — do not guess, approximate, or reuse a plausible-sounding detail from a different song, video, or artist. ` +
-    `This matters most for visual/production details (music video imagery, behind-the-scenes trivia) — those are the easiest to get wrong or confuse with another song. ` +
-    `If you are not confident about this specific angle for this specific track, fall back to the song's lyrical theme or general vibe instead — that is something you can describe accurately just from the song itself. ` +
-    `${guidance} ` +
-    `The question must ask for exactly ONE specific fact (e.g. a single name, date, place, or number) and must be a single, direct, plainly-worded sentence — ` +
-    `no compound or multi-part questions, no run-on clauses stacking extra clues onto the same sentence. ` +
-    `State clearly what kind of answer you want (e.g. "Name the album...", "What decade...", "Which city..."). ` +
-    `Every question must include at least one specific, concrete supporting detail or piece of context in the question itself — never just a bare "what year/number" ask with nothing else to go on. ` +
-    `Never write a circular or self-answering question — one where the answer is already stated or obviously implied by the question's own wording (e.g. don't say "this is a live recording, what kind of performance is shown?" where "live" already gives away "a live performance"). If you don't have a specific, confidently-known fact for this angle, pick a different angle instead of writing a vague or generic question. ` +
-    `For the hint: it must add a piece of information that is NOT already present anywhere in the question, and that meaningfully narrows down the answer — never just rephrase or restate the question (that is not a hint, it's noise). ` +
-    `Good hints do things like: name a related person/place/thing and how it connects, give a category or range the answer falls into, describe what it sounds/looks/rhymes like, or give a partial version of the answer (e.g. first word, first letter, or how many words it has). ` +
-    `For example, if the question is "This track's official video is set against a colorful backdrop covered in artwork — what kind of urban setting is shown?", a bad hint just repeats that ("think about the backdrop") — a good hint adds something new, like "the same city where the video was filmed is mentioned in another one of the band's song titles" or "it's a common feature of West Coast urban art culture." ` +
-    `Don't reveal the song title, and don't phrase it in a way that assumes the listener already knows what song is playing. ` +
-    `IMPORTANT: if you used the fallback and wrote about something other than "${angle}", the "category" field in your response must match what you ACTUALLY wrote about, not the originally requested angle — the two must never be mismatched. ` +
-    `Respond with ONLY JSON: {"question":"<question, under 35 words>","answer":"<short correct answer, a single name/date/number/phrase>","hint":"<a genuinely useful clue that adds new information not in the question, per the rules above>","funfact":"<one extra sentence of context that explains or expands on the answer, written so it makes sense even to someone unfamiliar with the term used in the answer>","category":"<one of: ${KNOWN_CATEGORIES.join(', ')} — whichever actually matches what the question is about>"}`;
-}
-
 // Name That Tune mode: the listener guesses the SONG TITLE after hearing a
-// clip, not the answer to a trivia question — so unlike questionPrompt(),
-// this must produce a declarative statement, never a question with its own
-// answer to judge (a question here would invite the listener to answer it
-// directly, but nothing checks that answer — only the guessed title matters).
+// clip, not the answer to a trivia question — so this must produce a
+// declarative statement, never a question with its own answer to judge (a
+// question here would invite the listener to answer it directly, but
+// nothing checks that answer — only the guessed title matters).
 function cluePrompt(trackName, artist, difficulty) {
   const level = (difficulty || 'Medium').toLowerCase();
   const guidance = DIFFICULTY_GUIDANCE[level] || DIFFICULTY_GUIDANCE.medium;
@@ -172,22 +108,6 @@ export default async function handler(req, res) {
       return;
     }
 
-    if (type === 'question') {
-      const { trackName, artist, difficulty } = req.body;
-      if (!trackName || !artist) { res.status(400).json({ error: 'Missing trackName/artist' }); return; }
-      const pool = anglesForDifficulty(difficulty);
-      const { label, angle } = pool[Math.floor(Math.random() * pool.length)];
-      const result = await callClaude(questionPrompt(trackName, artist, difficulty, angle));
-      if (!result) { res.status(502).json({ error: 'Could not generate a question' }); return; }
-      // Trust the model's self-reported category over our originally-picked
-      // angle — the prompt allows it to fall back to a safer angle when it
-      // isn't confident, and the spoken label must match what it actually
-      // wrote, not what we asked for.
-      const category = KNOWN_CATEGORIES.includes(result.category) ? result.category : label;
-      res.status(200).json({ ...result, category });
-      return;
-    }
-
     if (type === 'clue') {
       const { trackName, artist, difficulty } = req.body;
       if (!trackName || !artist) { res.status(400).json({ error: 'Missing trackName/artist' }); return; }
@@ -206,7 +126,7 @@ export default async function handler(req, res) {
       return;
     }
 
-    res.status(400).json({ error: 'Unknown type — expected "queue", "question", "clue", or "judge".' });
+    res.status(400).json({ error: 'Unknown type — expected "queue", "clue", or "judge".' });
   } catch (err) {
     res.status(502).json({ error: String(err.message || err) });
   }
