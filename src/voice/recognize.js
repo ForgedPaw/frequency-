@@ -25,6 +25,27 @@
 
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
+// Merges a newly-reported speech segment into what's accumulated so far.
+// Android Chrome's continuous mode doesn't reliably report each result as a
+// genuinely new, non-overlapping chunk — it can re-report a *growing prefix
+// of the same utterance* across multiple events ("You" -> "You Shook" ->
+// "You Shook Me" ...), sometimes marking each one final. Blindly
+// concatenating every reported segment (or every "final" one) duplicates
+// text in that case. This only appends when the incoming text is neither a
+// stale shorter prefix of what we already have, nor a longer revision of
+// it — i.e. only when it's actually new.
+function mergeSegment(current, incoming) {
+  const cur = current.trim();
+  const inc = incoming.trim();
+  if (!inc) return cur;
+  if (!cur) return inc;
+  const curLower = cur.toLowerCase();
+  const incLower = inc.toLowerCase();
+  if (curLower.startsWith(incLower)) return cur; // incoming is an old/shorter prefix — already superseded
+  if (incLower.startsWith(curLower)) return inc; // incoming is a longer revision of the same utterance — replace
+  return `${cur} ${inc}`; // genuinely new, non-overlapping segment — append
+}
+
 const INITIAL_SILENCE_MS = 8000; // grace period to start answering (thinking time)
 const SILENCE_MS = 1800;         // once you've started talking, how long a pause means "done"
 const MAX_LISTEN_MS = 20000;     // hard cap so a stuck session can't listen forever
@@ -127,23 +148,23 @@ export function listenOnce(onResult) {
 
   recognizer.onresult = (e) => {
     if (myGeneration !== generation) return; // superseded by abortActive()
-    // Rebuild the final transcript from scratch on every event, scanning
-    // e.results from 0, rather than incrementally appending from
-    // e.resultIndex. resultIndex is unreliable on Android Chrome in
-    // continuous mode — it doesn't always advance, so incremental appending
-    // re-added already-committed final segments on top of themselves every
-    // time a new one arrived (visible as progressively duplicating text:
-    // "You" -> "You Shook" -> "You Shook Me" ...). e.results itself doesn't
-    // have that problem — each index is a stable, non-duplicated segment.
-    let finalText = '';
-    let interimChunk = '';
+    // Scan the full e.results array every time (not just from
+    // e.resultIndex, which doesn't reliably advance on Android Chrome) and
+    // merge each segment via mergeSegment() rather than concatenating —
+    // that's what makes re-scanning already-seen entries safe instead of
+    // re-adding them. Final and interim are merged separately since they're
+    // semantically different (settled vs. still-in-progress), then joined
+    // for display.
+    let finalText = accumulated;
+    let interimText = '';
     for (let i = 0; i < e.results.length; i++) {
-      if (e.results[i].isFinal) finalText += (finalText ? ' ' : '') + e.results[i][0].transcript;
-      else interimChunk += e.results[i][0].transcript;
+      const text = e.results[i][0].transcript;
+      if (e.results[i].isFinal) finalText = mergeSegment(finalText, text);
+      else interimText = mergeSegment(interimText, text);
     }
-    if (finalText.trim() || interimChunk.trim()) hasHeardSpeech = true;
-    accumulated = finalText.trim();
-    if (onInterim) onInterim((accumulated + ' ' + interimChunk).trim());
+    if (finalText.trim() || interimText.trim()) hasHeardSpeech = true;
+    accumulated = finalText;
+    if (onInterim) onInterim((accumulated + ' ' + interimText).trim());
     // Calling stop() often triggers one last onresult promoting pending
     // interim text to final — keep accepting results even after stop() was
     // requested so that trailing chunk isn't dropped.

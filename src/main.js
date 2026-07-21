@@ -26,6 +26,26 @@ const CATEGORIES = [
 // setupSpeech() themselves.
 let voiceSetup = null;
 
+// Spotify playback can fail transiently — a backgrounded mobile tab losing
+// its device momentarily, another Spotify Connect client briefly taking
+// over, a network blip — none of which the search/question/judge retry
+// logic elsewhere in the app covers, since this is a separate call. Retries
+// once before giving up, same pattern as those other call sites.
+async function playWithRetry(playFn, addLog) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await playFn();
+      return;
+    } catch (e) {
+      if (attempt === 0) {
+        addLog('DJ', `Playback error — retrying…`, true);
+      } else {
+        addLog('DJ', `Playback error: ${e.message}`, true);
+      }
+    }
+  }
+}
+
 async function main() {
   if (window.location.pathname === '/callback') {
     await handleCallbackRoute();
@@ -301,7 +321,7 @@ async function boot(difficulty) {
     triviaClient,
     initialDifficulty: difficulty,
     player: {
-      play: (track) => spotifyPlayer.play(track).catch((e) => addLog('DJ', `Playback error: ${e.message}`, true)),
+      play: (track) => playWithRetry(() => spotifyPlayer.play(track), addLog),
       pause: () => spotifyPlayer.pause(),
     },
     ui: {
@@ -381,10 +401,9 @@ async function bootNameThatTune(difficulty) {
     triviaClient,
     initialDifficulty: difficulty,
     player: {
-      play: (track) => spotifyPlayer.play(track).catch((e) => addLog('DJ', `Playback error: ${e.message}`, true)),
+      play: (track) => playWithRetry(() => spotifyPlayer.play(track), addLog),
       pause: () => spotifyPlayer.pause(),
-      playClip: (track, ms, positionMs) => spotifyPlayer.playSample(track, ms, positionMs)
-        .catch((e) => addLog('DJ', `Playback error: ${e.message}`, true)),
+      playClip: (track, ms, positionMs) => playWithRetry(() => spotifyPlayer.playSample(track, ms, positionMs), addLog),
     },
     ui: {
       setState: (stateKey, name, sub) => {
@@ -485,7 +504,7 @@ async function bootBattle({ playerNames, targetScore, difficulty, category, isMy
     listen: (onResult) => listenOnce(onResult),
     triviaClient,
     player: {
-      play: (track) => spotifyPlayer.play(track).catch((e) => addLog('DJ', `Playback error: ${e.message}`, true)),
+      play: (track) => playWithRetry(() => spotifyPlayer.play(track), addLog),
       pause: () => spotifyPlayer.pause(),
     },
     ui: {
