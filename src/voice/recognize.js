@@ -127,16 +127,22 @@ export function listenOnce(onResult) {
 
   recognizer.onresult = (e) => {
     if (myGeneration !== generation) return; // superseded by abortActive()
-    let finalChunk = '';
+    // Rebuild the final transcript from scratch on every event, scanning
+    // e.results from 0, rather than incrementally appending from
+    // e.resultIndex. resultIndex is unreliable on Android Chrome in
+    // continuous mode — it doesn't always advance, so incremental appending
+    // re-added already-committed final segments on top of themselves every
+    // time a new one arrived (visible as progressively duplicating text:
+    // "You" -> "You Shook" -> "You Shook Me" ...). e.results itself doesn't
+    // have that problem — each index is a stable, non-duplicated segment.
+    let finalText = '';
     let interimChunk = '';
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      if (e.results[i].isFinal) finalChunk += e.results[i][0].transcript;
+    for (let i = 0; i < e.results.length; i++) {
+      if (e.results[i].isFinal) finalText += (finalText ? ' ' : '') + e.results[i][0].transcript;
       else interimChunk += e.results[i][0].transcript;
     }
-    if (finalChunk.trim() || interimChunk.trim()) hasHeardSpeech = true;
-    if (finalChunk.trim()) {
-      accumulated += (accumulated ? ' ' : '') + finalChunk.trim();
-    }
+    if (finalText.trim() || interimChunk.trim()) hasHeardSpeech = true;
+    accumulated = finalText.trim();
     if (onInterim) onInterim((accumulated + ' ' + interimChunk).trim());
     // Calling stop() often triggers one last onresult promoting pending
     // interim text to final — keep accepting results even after stop() was
