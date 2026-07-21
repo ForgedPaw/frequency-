@@ -176,6 +176,13 @@ export function createBattle(deps) {
   // optional full-song reveal playback below (state 'PLAYBACK'), and reusing
   // it here would fire songEnded() at the wrong time since this happens
   // while still in 'QUESTION'.
+  //
+  // Explicitly pauses before listening rather than trusting player.js's own
+  // internal pause-after-`ms` timer to have already landed: that timer only
+  // starts counting once the /play network call resolves, not from when
+  // audio actually starts, so under real latency it can still be pending
+  // when this fires — leaving the clip audibly playing (or restarting mid
+  // hint) right as the mic opens for the guess.
   function playClipThenListen(ms, positionMs) {
     ui.waveMode('playing');
     player.playClip(currentQ.track, ms, positionMs).catch((e) => {
@@ -183,6 +190,7 @@ export function createBattle(deps) {
     });
     setTimeout(() => {
       ui.waveMode('idle');
+      player.pause();
       listen(handleUtterance);
     }, ms + CLIP_BUFFER_MS);
   }
