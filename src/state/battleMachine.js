@@ -104,6 +104,7 @@ export function createBattle(deps) {
       return;
     }
     if (matchesAny(text, ['quit', 'end game', 'stop game', 'end battle'])) {
+      if (state === 'PLAYBACK') player.pause();
       const standings = standingsText();
       speak(`Ending the battle early. Standings: ${standings}.`, finishBattle);
       return;
@@ -300,9 +301,16 @@ export function createBattle(deps) {
     advanceTurn();
   }
 
-  // Called by main.js when player.js reports natural track end.
+  // Called by main.js when player.js reports natural track end. That
+  // report is a client-side timer based on the track's expected duration,
+  // not a real "Spotify actually stopped" signal — the /play call has
+  // network/buffering start-latency the timer doesn't account for, so the
+  // timer can fire slightly before the track truly finishes. Explicitly
+  // pause here (same as skipSong()) so leftover audio never bleeds into
+  // the next turn instead of just assuming it already stopped.
   function songEnded() {
     if (state !== 'PLAYBACK') return;
+    player.pause();
     setTimeout(() => advanceTurn(), 600);
   }
 

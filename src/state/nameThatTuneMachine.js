@@ -99,10 +99,12 @@ export function createNameThatTune(deps) {
       return;
     }
     if (matchesAny(text, ['new category', 'change category'])) {
+      if (game.state === 'PLAYBACK') player.pause();
       resetToMenu();
       return;
     }
     if (matchesAny(text, ['quit', 'end game', 'stop game'])) {
+      if (game.state === 'PLAYBACK') player.pause();
       speak(`Final score: ${game.score.correct} out of ${game.score.total}. Thanks for playing Frequency!`);
       setState('MENU', 'Menu', 'Game ended — pick a new category to play again.');
       return;
@@ -335,8 +337,15 @@ export function createNameThatTune(deps) {
   // meaningful during the optional full-song reveal playback — the
   // clip-guessing phase manages its own timing (see playClipThenListen) and
   // never enters 'PLAYBACK' state, so this is a no-op the rest of the time.
+  // That report is a client-side timer based on the track's expected
+  // duration, not a real "Spotify actually stopped" signal — the /play call
+  // has network/buffering start-latency the timer doesn't account for, so
+  // it can fire slightly before the track truly finishes. Explicitly pause
+  // here (same as skipSong()) so leftover audio never bleeds into the next
+  // question instead of just assuming it already stopped.
   function songEnded() {
     if (game.state !== 'PLAYBACK') return;
+    player.pause();
     setTimeout(() => nextRound(), 600);
   }
 
