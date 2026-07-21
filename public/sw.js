@@ -1,8 +1,14 @@
-// Minimal cache-first service worker for the app shell (spec §3).
+// Minimal network-first service worker for the app shell (spec §3) — falls
+// back to the cache only when offline. A cache-first strategy was tried
+// first, but it meant every deploy after a visitor's first load was
+// invisible to them forever (the cached index.html keeps pointing at old
+// hashed JS/CSS filenames, and nothing ever re-checks the network to notice
+// a new deploy exists). Network-first fixes that while keeping basic
+// offline support via the cache fallback.
 // Only handles same-origin GET requests; API calls and Spotify/Anthropic
 // requests always go to the network.
 
-const CACHE_NAME = 'frequency-shell-v1';
+const CACHE_NAME = 'frequency-shell-v2';
 const PRECACHE_URLS = ['/', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (event) => {
@@ -27,15 +33,12 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET' || !isSameOrigin || isApiCall) return;
 
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).then((response) => {
-        if (response.ok) {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-        }
-        return response;
-      }).catch(() => cached);
-    })
+    fetch(event.request).then((response) => {
+      if (response.ok) {
+        const copy = response.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+      }
+      return response;
+    }).catch(() => caches.match(event.request))
   );
 });
